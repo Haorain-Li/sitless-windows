@@ -1,0 +1,21 @@
+# Local runtime state: never publish timing history or window positions.
+sitless.settings.xml
+sitless.settings.xml.tmp
+**/sitless.settings.xml
+**/sitless.settings.xml.tmp
+
+# Generated build and diagnostic files.
+dist/
+*.exe
+*.pdb
+*.tmp
+*.log
+App.debug.cs
+App.demo.cs
+App.profile.cs
+profile.txt
+trace.txt
+运行验证.json
+
+# Intentional downloadable portable build.
+!portable/SitLess.exe
