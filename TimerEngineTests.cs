@@ -145,6 +145,23 @@ internal static class TimerEngineTests
             Seconds(30, clock.WorkDuration, "Rejected settings are atomic");
             Throws(delegate { clock.Snooze(TimeSpan.Zero); }, "Zero snooze rejected");
 
+            clock = Clock(10, 3);
+            clock.Tick(TimeSpan.FromSeconds(10));
+            clock.Snooze(TimeSpan.FromSeconds(5));
+            clock.Tick(TimeSpan.FromSeconds(1));
+            clock.Configure(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(3));
+            Equal(TimerPhase.Working, clock.Phase, "Saving unchanged settings preserves snooze");
+            Seconds(4, clock.WorkRemaining, "Unchanged settings retain snooze deadline");
+            clock.Configure(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(7));
+            Seconds(4, clock.WorkRemaining, "Changing only break duration preserves snooze");
+            clock.Pause();
+            clock.Configure(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(7));
+            Equal(true, clock.IsPaused, "Saving settings preserves manual pause");
+            clock.Resume();
+            Equal(TimerSignal.ReminderDue, clock.Tick(TimeSpan.FromSeconds(4)), "Preserved snooze expires normally");
+            clock.StartBreak();
+            Seconds(7, clock.BreakRemaining, "Updated break duration applies to next break");
+
             Console.WriteLine("PASS: " + assertions + " timer assertions");
             return 0;
         }

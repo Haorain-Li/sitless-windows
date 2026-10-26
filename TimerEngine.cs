@@ -12,7 +12,8 @@ namespace StandReminder
     /// A reminder does not start a break: only StartBreak does. Snoozing and skipping
     /// a partial break retain accrued work. Deltas above 15 seconds are ignored so
     /// suspend/resume or a blocked UI cannot be mistaken for completed movement.
-    /// Configure preserves work, clears snooze, and applies a changed break duration
+    /// Configure preserves work, clears snooze only when the work interval changes,
+    /// and applies a changed break duration
     /// to the NEXT break; an active break keeps the duration it started with.
     /// </summary>
     public sealed class TimerEngine
@@ -126,9 +127,10 @@ namespace StandReminder
         {
             ValidateDuration(workDuration, "workDuration");
             ValidateDuration(breakDuration, "breakDuration");
+            bool intervalChanged = WorkDuration != workDuration;
             WorkDuration = workDuration;
             BreakDuration = breakDuration;
-            reminderAt = WorkDuration;
+            if (intervalChanged) reminderAt = WorkDuration;
             if (Phase != TimerPhase.Break)
             {
                 activeBreakDuration = BreakDuration;

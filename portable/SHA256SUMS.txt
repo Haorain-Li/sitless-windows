@@ -1,0 +1,2 @@
+1db075aa6b64458984fcc38a720964b22e807b9e7b7404c48bd76acef6cfcd66  SitLess.exe
+b522cf4604bef3f77d98aff4690202bdb1781d1b8dd1429ec21bb41ede0d58fc  SitLess-Windows-v1.0.0.zip
