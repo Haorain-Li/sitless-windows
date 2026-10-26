@@ -4,7 +4,7 @@
 
 使用原生 Windows 窗体，无需安装或登录，无第三方依赖。设置与记录保存在本机。
 
-[使用指南](docs/使用说明.md) · [文档目录](docs/README.md) · [更新记录](CHANGELOG.md) · [下载 v1.3.2](https://github.com/Haorain-Li/sitless-windows/releases/tag/v1.3.2)
+[使用指南](docs/使用说明.md) · [文档目录](docs/README.md) · [更新记录](CHANGELOG.md) · [下载 v1.1.0](https://github.com/Haorain-Li/sitless-windows/releases/tag/v1.1.0)
 
 ![普通浮窗](previews/floating.png)
 
@@ -12,10 +12,12 @@
 
 | 版本 | 状态 | 包含内容 |
 | --- | --- | --- |
-| **v1.3.2** | 当前版本 | 灰框修复、自启动、固定数据目录、打卡日历及既有提醒功能 |
+| **v1.1.0** | 当前版本 | 灰框修复、自启动、固定数据目录、打卡日历及既有提醒功能 |
 | **v1.0.0** | 历史版本 | 久坐提醒、全屏免打扰及按钮绘制修复；不含后续每日打卡与拖动缩放 |
 
-下载 [v1.3.2 便携包（含使用文档）](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SitLess-Windows-v1.3.2.zip)，或 [单文件程序](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SitLess.exe)。[SHA-256 校验值](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SHA256SUMS.txt)与下载文件一同提供。源码构建方法见下文。
+本轮功能更新统一为 v1.1.0，接续 v1.0.0。开发与测试重试使用提交号；正式发布时，问题修复递增补丁号，新增功能递增次版本号。详细记录见 [更新记录](CHANGELOG.md)。
+
+下载 [v1.1.0 便携包（含使用文档）](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.1.0/SitLess-Windows-v1.1.0.zip)，或 [单文件程序](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.1.0/SitLess.exe)。[SHA-256 校验值](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.1.0/SHA256SUMS.txt)与下载文件一同提供。源码构建方法见下文。
 
 适用于 Windows 10 / 11，使用系统自带 .NET Framework 4.x，建议 4.8。解压到可写文件夹，双击 `SitLess.exe` 即可运行。
 
@@ -73,7 +75,7 @@
 
 ## 保存数据与升级
 
-从 v1.3.0 起，数据固定保存在 **`%LOCALAPPDATA%\SitLess`**。`sitless.settings.xml` 保存偏好、窗口位置 / 尺寸与当天计时，`sitless.checkins.xml` 保存打卡历史，均维护备份。每个 Windows 用户有自己的记录；同一账号下移动或升级程序无需再复制记录。
+从 v1.1.0 起，数据固定保存在 **`%LOCALAPPDATA%\SitLess`**。`sitless.settings.xml` 保存偏好、窗口位置 / 尺寸与当天计时，`sitless.checkins.xml` 保存打卡历史，均维护备份。每个 Windows 用户有自己的记录；同一账号下移动或升级程序无需再复制记录。
 
 升级前先从托盘退出旧版。首次正常运行会迁移新程序所在目录中的旧 XML，保留原件。旧记录在其他文件夹时，可在“历史记录”页点击“导入旧版记录”，选择旧的 `sitless.checkins.xml`。导入补充缺失日期与今日空白状态，不覆盖已确认记录。若旧版仍在运行，新程序会切回旧实例，请核对设置标题中的版本。
 

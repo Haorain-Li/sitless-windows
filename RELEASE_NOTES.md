@@ -1,6 +1,8 @@
-# 起身 · Sit Less v1.3.2
+# 起身 · Sit Less v1.1.0
 
 本次发布整合每日打卡、界面与缩放改进，并新增自启动、固定数据目录和打卡日历。
+
+正式版本由 v1.0.0 递进到 v1.1.0；此前误用的 v1.3.2 编号由本版纠正。已使用该包的用户可直接换用 v1.1.0，同一 Windows 用户的设置与打卡记录继续保留。
 
 ## 本次更新
 
@@ -14,8 +16,8 @@
 
 ## 使用
 
-1. 解压 SitLess-Windows-v1.3.2.zip，从托盘退出旧版，再运行新程序。
-2. 在设置标题核对 v1.3.2；首次正常运行默认注册当前用户登录启动项。演示 / 预览不会注册。
+1. 解压 SitLess-Windows-v1.1.0.zip，从托盘退出旧版，再运行新程序。
+2. 在设置标题核对 v1.1.0；首次正常运行默认注册当前用户登录启动项。演示 / 预览不会注册。
 3. 初次从新文件夹升级，若旧记录不在新程序旁，请在“历史记录 → 导入旧版记录”选择旧的 sitless.checkins.xml。此后移动程序不需要再复制记录。
 4. 自启动可在偏好设置关闭；移动程序后手动运行一次以更新启动路径。
 
@@ -23,4 +25,4 @@
 
 2,560 项断言通过，含 1,527 项新增健壮性检查。灰框相关代码路径、激活消息、三种缩放和重复拖动已回归；由于桌面组件不可用，真实点击、登录启动、游戏和混合 DPI 仍待实机验收。
 
-[使用指南](https://github.com/Haorain-Li/sitless-windows/blob/v1.3.2/docs/使用说明.md) · [代码审查与健壮性报告](https://github.com/Haorain-Li/sitless-windows/blob/v1.3.2/docs/代码审查与健壮性报告.md) · [验证说明](https://github.com/Haorain-Li/sitless-windows/blob/v1.3.2/docs/验证说明.md)
+[使用指南](https://github.com/Haorain-Li/sitless-windows/blob/v1.1.0/docs/使用说明.md) · [代码审查与健壮性报告](https://github.com/Haorain-Li/sitless-windows/blob/v1.1.0/docs/代码审查与健壮性报告.md) · [验证说明](https://github.com/Haorain-Li/sitless-windows/blob/v1.1.0/docs/验证说明.md)
