@@ -15,7 +15,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("起身 · Sit Less")]
 [assembly: System.Reflection.AssemblyDescription("轻量桌面久坐提醒")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
 
 namespace StandReminder
 {

@@ -47,6 +47,8 @@ internal static class WindowSizingTests
             Equal(new Size(440,390),WindowSizing.Restore(new Size(440,-1),false,1,work),"Invalid height falls back independently");
             Equal(new Size(300,200),WindowSizing.Restore(new Size(344,390),false,2,new Size(300,200)),"Small work area caps both constraints");
             Equal(new Size(300,200),WindowSizing.Minimum(false,2,new Size(300,200)),"Minimum cannot exceed work area");
+            Equal(new Size(660,720),WindowSizing.Restore(new Size(440,500),false,1.5f,new Size(1280,720)),"Expanded size fits a 720p work area at 150 percent");
+            Equal(new Size(688,720),WindowSizing.Restore(new Size(344,390),false,2,new Size(1280,720)),"Default size fits a 720p work area at 200 percent");
             Equal(new Size(1,1),WindowSizing.Maximum(false,1,Size.Empty),"Degenerate work area stays valid");
             Equal(new Size(440,500),WindowSizing.ToLogical(WindowSizing.ToPixels(new Size(440,500),1.5f),1.5f),"Logical size survives DPI roundtrip");
             foreach (Point point in new Point[]{new Point(-1920,-1080),new Point(-1,400),new Point(500,-1),new Point(32767,-32768),Point.Empty})
@@ -88,6 +90,8 @@ internal static class WindowSizingTests
                     Equal(true,window.Region.IsVisible(cornerPoint),"Large rounded corner retains a visible drag target");
                     Equal(1,SendMessage(window.Handle,0x84,IntPtr.Zero,Pack(window.PointToScreen(cornerPoint))).ToInt32(),"Large rounded corner remains client-side");
                     window.ClientSize=WindowSizing.ToPixels(new Size(440,500),dpi);
+                    // The display may cap this size, including on a 720p CI desktop.
+                    Size rememberedFull=window.ClientSize;
                     Point testPoint=window.PointToScreen(new Point(2,(int)(100*dpi)));
                     Equal(1,SendMessage(window.Handle,0x84,IntPtr.Zero,Pack(testPoint)).ToInt32(),"Resize edge avoids native activation frame");
                     testPoint=window.PointToScreen(new Point(window.Width-(int)Math.Round(5*dpi),window.Height-(int)Math.Round(5*dpi)));
@@ -95,20 +99,21 @@ internal static class WindowSizingTests
                     Call(window,"ToggleCompact");
                     Equal(WindowSizing.ToPixels(new Size(280,88),dpi),window.ClientSize,"Compact starts with independent default");
                     window.ClientSize=WindowSizing.ToPixels(new Size(380,120),dpi); CheckLayout(window);
+                    Size rememberedCompact=window.ClientSize;
                     Equal(380,prefs.CompactWidth,"Compact width remembered separately"); Equal(120,prefs.CompactHeight,"Compact height remembered separately");
-                    Call(window,"ToggleCompact"); Equal(WindowSizing.ToPixels(new Size(440,500),dpi),window.ClientSize,"Expanded size restored after mode switch");
-                    Call(window,"ToggleCompact"); Equal(WindowSizing.ToPixels(new Size(380,120),dpi),window.ClientSize,"Compact size restored after mode switch");
+                    Call(window,"ToggleCompact"); Equal(rememberedFull,window.ClientSize,"Expanded size restored after mode switch");
+                    Call(window,"ToggleCompact"); Equal(rememberedCompact,window.ClientSize,"Compact size restored after mode switch");
                     Equal(2d,timer.WorkElapsed.TotalSeconds,"Resize and mode changes preserve elapsed work");
                     // A due reminder temporarily expands; it must not overwrite the compact preference.
                     timer.Configure(TimeSpan.FromSeconds(2),TimeSpan.FromSeconds(3)); Call(window,"LayoutWindow");
-                    Equal(WindowSizing.ToPixels(new Size(440,500),dpi),window.ClientSize,"Reminder expands to remembered full size");
+                    Equal(rememberedFull,window.ClientSize,"Reminder expands to remembered full size");
                     Equal(380,prefs.CompactWidth,"Temporary expansion preserves compact size");
                     timer.ResetSession(); Call(window,"LayoutWindow");
-                    Equal(WindowSizing.ToPixels(new Size(380,120),dpi),window.ClientSize,"Handling reminder restores custom compact size");
+                    Equal(rememberedCompact,window.ClientSize,"Handling reminder restores custom compact size");
                     Call(window,"ResetWindowSize"); Equal(WindowSizing.ToPixels(new Size(280,88),dpi),window.ClientSize,"Reset current mode to default");
                     Equal(440,prefs.FullWidth,"Compact reset does not change full width");
                     Call(window,"ToggleCompact"); Call(window,"ResetWindowSize");
-                    Equal(WindowSizing.ToPixels(new Size(344,390),dpi),window.ClientSize,"Full reset restores default");
+                    Equal(WindowSizing.Restore(new Size(344,390),false,dpi,Screen.FromRectangle(window.Bounds).WorkingArea.Size),window.ClientSize,"Full reset restores screen-constrained default");
                     Equal(false,timer.IsPaused,"Resize leaves pause state unchanged"); Equal(1,daily.Count(DailyHabit.Pelvic),"Resize preserves daily check-ins");
                     using (StringWriter writer=new StringWriter())
                     {
