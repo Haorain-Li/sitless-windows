@@ -4,7 +4,7 @@
 
 使用原生 Windows 窗体，无需安装或登录，无第三方依赖。设置与记录保存在本机。
 
-[使用指南](docs/使用说明.md) · [文档目录](docs/README.md) · [更新记录](CHANGELOG.md) · [下载 v1.3.1](https://github.com/Haorain-Li/sitless-windows/releases/tag/v1.3.1)
+[使用指南](docs/使用说明.md) · [文档目录](docs/README.md) · [更新记录](CHANGELOG.md) · [下载 v1.3.2](https://github.com/Haorain-Li/sitless-windows/releases/tag/v1.3.2)
 
 ![普通浮窗](previews/floating.png)
 
@@ -12,10 +12,10 @@
 
 | 版本 | 状态 | 包含内容 |
 | --- | --- | --- |
-| **v1.3.1** | 当前版本 | 灰框修复、自启动、固定数据目录、打卡日历及既有提醒功能 |
+| **v1.3.2** | 当前版本 | 灰框修复、自启动、固定数据目录、打卡日历及既有提醒功能 |
 | **v1.0.0** | 历史版本 | 久坐提醒、全屏免打扰及按钮绘制修复；不含后续每日打卡与拖动缩放 |
 
-下载 [v1.3.1 便携包（含使用文档）](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.1/SitLess-Windows-v1.3.1.zip)，或 [单文件程序](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.1/SitLess.exe)。[SHA-256 校验值](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.1/SHA256SUMS.txt)与下载文件一同提供。源码构建方法见下文。
+下载 [v1.3.2 便携包（含使用文档）](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SitLess-Windows-v1.3.2.zip)，或 [单文件程序](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SitLess.exe)。[SHA-256 校验值](https://github.com/Haorain-Li/sitless-windows/releases/download/v1.3.2/SHA256SUMS.txt)与下载文件一同提供。源码构建方法见下文。
 
 适用于 Windows 10 / 11，使用系统自带 .NET Framework 4.x，建议 4.8。解压到可写文件夹，双击 `SitLess.exe` 即可运行。
 
