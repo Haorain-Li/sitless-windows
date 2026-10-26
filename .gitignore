@@ -1,8 +1,8 @@
 # Local runtime state: never publish timing history or window positions.
-sitless.settings.xml
-sitless.settings.xml.tmp
-**/sitless.settings.xml
-**/sitless.settings.xml.tmp
+sitless.settings.*
+**/sitless.settings.*
+sitless.checkins.*
+**/sitless.checkins.*
 
 # Generated build and diagnostic files.
 dist/

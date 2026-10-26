@@ -15,7 +15,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("起身 · Sit Less")]
 [assembly: System.Reflection.AssemblyDescription("轻量桌面久坐提醒")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
 
 namespace StandReminder
 {
@@ -32,6 +32,7 @@ namespace StandReminder
         {
             bool demo = Array.IndexOf(args, "--demo") >= 0;
             bool render = Array.IndexOf(args, "--render") >= 0;
+            bool startup = Array.IndexOf(args,"--startup")>=0;
             float previewScale=0;
             if (render)
                 foreach (string arg in args)
@@ -47,7 +48,7 @@ namespace StandReminder
                 if (!created)
                 {
                     IntPtr previous = FindWindow(null, WindowTitle + (demo ? " · 演示" : ""));
-                    if (previous != IntPtr.Zero) PostMessage(previous, ShowMessage, IntPtr.Zero, IntPtr.Zero);
+                    if (previous != IntPtr.Zero && !startup) PostMessage(previous, ShowMessage, IntPtr.Zero, IntPtr.Zero);
                     return;
                 }
                 try { SetProcessDPIAware(); } catch (EntryPointNotFoundException) { }
@@ -55,6 +56,7 @@ namespace StandReminder
                 Application.SetCompatibleTextRenderingDefault(false);
                 using (FloatWindow window = new FloatWindow(demo, render,previewScale))
                 {
+                    window.StartInTray=startup;
                     if (render) window.RenderPreviews();
                     else Application.Run(window);
                 }
@@ -70,6 +72,13 @@ namespace StandReminder
         public bool Compact = false;
         public bool Sound = false;
         public bool AutoQuietFullscreen = true;
+        public bool StartWithWindows = true;
+        public bool PelvicCheckReminder = true;
+        public bool WaterCheckReminder = true;
+        public int CheckInReminderMinute = 1200;
+        public int DailyWaterTargetMl = 1500;
+        public int FullWidth = 344, FullHeight = 390;
+        public int CompactWidth = 280, CompactHeight = 88;
         public int Left = int.MinValue;
         public int Top = int.MinValue;
         public string StatsDate = "";
@@ -125,6 +134,7 @@ namespace StandReminder
     {
         internal bool Primary;
         internal bool Amber;
+        internal UiGlyph Glyph;
         private bool hovered, pressed;
         internal SoftButton()
         {
@@ -158,7 +168,13 @@ namespace StandReminder
             if (!Enabled) bg = Palette.Line;
             using (Brush b = new SolidBrush(bg)) Palette.FillRound(e.Graphics,b,new RectangleF(0,0,Width-1,Height-1),8*DeviceScale);
             Color fg = Primary ? Color.White : Palette.Ink;
-            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled ? fg : Palette.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+            if (Glyph==UiGlyph.None)
+                TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled ? fg : Palette.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+            else
+            {
+                float size=16*DeviceScale;
+                GlyphPainter.Draw(e.Graphics,Glyph,new RectangleF((Width-size)/2,(Height-size)/2,size,size),Enabled?fg:Palette.Muted);
+            }
             if (Enabled && Focused && ShowFocusCues)
             {
                 float inset=3*DeviceScale;
@@ -175,25 +191,42 @@ namespace StandReminder
     {
         private readonly bool demo, rendering;
         private readonly string preferencePath;
+        private readonly PreferencesStore preferenceStore;
+        private readonly UserDataLocation dataLocation;
         private Preferences prefs;
         private readonly TimerEngine engine;
+        private readonly DailyCheckInEngine checkIns;
+        private readonly DailyCheckInStore checkInStore;
+        private readonly string checkInRecovery;
         private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         private readonly Stopwatch monotonic = Stopwatch.StartNew();
         private readonly QuietModeState quiet = new QuietModeState();
         private readonly NotifyIcon tray = new NotifyIcon();
         private readonly ToolTip tips = new ToolTip();
-        private readonly ContextMenuStrip menu = new ContextMenuStrip();
+        private readonly ThemeMenu menu = new ThemeMenu();
         private readonly Dictionary<Control,Font> ownedFonts = new Dictionary<Control,Font>();
         private readonly Label title = new Label(), tagline = new Label(), status = new Label(), clock = new Label(), detail = new Label(), stats = new Label(), tracked = new Label(), statsTitle = new Label(), trackedTitle = new Label();
         private readonly SoftButton options = new SoftButton(), hide = new SoftButton(), primary = new SoftButton(), secondary = new SoftButton();
+        private readonly SoftButton compactToggle=new SoftButton();
+        private readonly Label dailyTitle=new Label();
+        private readonly SoftButton dailyHistory=new SoftButton(), pelvicCheck=new SoftButton(), waterCheck=new SoftButton();
         private float scale;
-        private bool compact, locked, sleeping, completedNotice, exiting, ready, settingsOpen;
+        private float layoutX=1, layoutY=1, contentScale=1;
+        private bool arrangingWindow, inSizeMove;
+        private int pointerHit;
+        private Point pointerOrigin;
+        private Rectangle pointerBounds;
+        private string startupError="";
+        internal bool StartInTray;
+        private bool compact, locked, sleeping, completedNotice, exiting, ready, settingsOpen, dailyOpen;
         private bool restoreAfterQuiet, deferredNotification, manualShow;
         private string saveError = "";
         private int ticks;
         private double progress;
         private Size regionSize;
         private bool Blocked { get { return locked || sleeping; } }
+        private int ResizeEdge { get { return Math.Max(S(7),(int)Math.Round(7*contentScale)); } }
+        private int ResizeCorner { get { return Math.Max(S(17),(int)Math.Round(17*contentScale)); } }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override void SetVisibleCore(bool value)
         {
@@ -201,14 +234,28 @@ namespace StandReminder
             base.SetVisibleCore(value);
         }
         protected override CreateParams CreateParams
-        { get { CreateParams cp=base.CreateParams; cp.ClassStyle |= 0x20000; return cp; } }
+        {
+            get
+            {
+                CreateParams cp=base.CreateParams;
+                // A hidden native sizing frame / class shadow can still be painted on activation.
+                cp.Style&=~(0x40000|0xC00000); cp.ClassStyle&=~0x20000; return cp;
+            }
+        }
 
         internal FloatWindow(bool isDemo, bool isRendering,float previewScale=0)
         {
             demo=isDemo; rendering=isRendering;
-            preferencePath=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"sitless.settings.xml");
+            dataLocation=new UserDataLocation(UserDataLocation.DefaultDirectory);
+            if (!demo && !rendering) dataLocation.Initialize(AppDomain.CurrentDomain.BaseDirectory);
+            preferencePath=dataLocation.SettingsPath;
+            preferenceStore=new PreferencesStore(preferencePath);
             prefs=LoadPreferences();
             if (rendering || demo) prefs=new Preferences();
+            checkInStore=new DailyCheckInStore(dataLocation.CheckInsPath);
+            checkIns=new DailyCheckInEngine(rendering || demo?new DailyCheckInData():checkInStore.Load(),DateTime.Today,prefs.DailyWaterTargetMl);
+            checkInRecovery=String.Join(" ",new string[]{dataLocation.Error,preferenceStore.Error,checkInStore.LastError}).Trim();
+            if (!demo && !rendering) startupError=dataLocation.Error.Length>0?"数据迁移未完成，暂未更改自启动项。":StartupRegistration.Apply(new RegistryStartupEntry(),prefs.StartWithWindows,Application.ExecutablePath);
             engine=new TimerEngine(TimeSpan.FromMinutes(prefs.WorkMinutes),TimeSpan.FromMinutes(prefs.BreakMinutes),DateTime.Today);
             if (demo) engine.Configure(TimeSpan.FromSeconds(10),TimeSpan.FromSeconds(5));
             DateTime date;
@@ -216,24 +263,40 @@ namespace StandReminder
                 try { engine.RestoreDailyStats(date,TimeSpan.FromSeconds(prefs.TodaySeconds),prefs.Completed); } catch (ArgumentException) { }
             using (Graphics g=CreateGraphics()) scale=g.DpiX/96f;
             if (rendering && previewScale>0) scale=previewScale;
+            menu.Configure(scale);
             AutoScaleMode=AutoScaleMode.None; FormBorderStyle=FormBorderStyle.None;
             Text=Program.WindowTitle+(demo ? " · 演示" : ""); ShowInTaskbar=true; BackColor=Palette.Paper;
             Icon=Palette.MakeIcon(); TopMost=prefs.AlwaysOnTop; StartPosition=FormStartPosition.Manual;
             DoubleBuffered=true; KeyPreview=true;
-            Controls.AddRange(new Control[]{title,tagline,status,clock,detail,stats,tracked,statsTitle,trackedTitle,options,hide,primary,secondary});
+            Controls.AddRange(new Control[]{title,tagline,status,clock,detail,stats,tracked,statsTitle,trackedTitle,options,hide,primary,secondary,compactToggle,dailyTitle,dailyHistory,pelvicCheck,waterCheck});
             title.Text="起身"; title.ForeColor=Palette.Ink; tagline.Text="SIT LESS"; tagline.ForeColor=Palette.Muted;
-            foreach (Label label in new Label[]{title,tagline,status,clock,detail,stats,tracked,statsTitle,trackedTitle}) { label.AutoSize=false; label.BackColor=Color.Transparent; label.MouseDown+=DragWindow; }
+            foreach (Label label in new Label[]{title,tagline,status,clock,detail,stats,tracked,statsTitle,trackedTitle}) { label.AutoSize=false; label.BackColor=Color.Transparent; label.MouseDown+=DragWindow; label.MouseMove+=PointerMoved; }
             status.ForeColor=Palette.Muted; clock.ForeColor=Palette.Ink; detail.ForeColor=Palette.Muted;
             stats.ForeColor=tracked.ForeColor=Palette.Ink; statsTitle.ForeColor=trackedTitle.ForeColor=Palette.Muted;
             statsTitle.Text="今日活动"; trackedTitle.Text="今日桌前计时";
             options.Text="···"; options.AccessibleName="打开菜单"; hide.Text="−"; hide.AccessibleName="收起到托盘";
+            options.Glyph=UiGlyph.More; hide.Glyph=UiGlyph.Hide;
+            compactToggle.Click+=delegate { ToggleCompact(); };
             primary.Primary=true;
-            options.Click+=delegate { menu.Show(options,new Point(0,options.Height)); };
+            options.Click+=delegate { menu.Show(options,new Point(options.Width,options.Height+S(6)),ToolStripDropDownDirection.BelowLeft); };
+            menu.Opened+=delegate { options.Primary=true; options.Invalidate(); };
+            menu.Closed+=delegate { options.Primary=false; options.Invalidate(); };
             hide.Click+=delegate { HideFloat(); if (!rendering && !quiet.IsActive) tray.ShowBalloonTip(3000,"起身仍在计时","双击托盘里的绿色图标，可找回浮窗。",ToolTipIcon.Info); };
             primary.Click+=delegate { PrimaryAction(); }; secondary.Click+=delegate { SecondaryAction(); };
+            dailyTitle.Text="每日打卡"; dailyTitle.ForeColor=Palette.Muted; dailyTitle.BackColor=Color.Transparent;
+            dailyHistory.Text="历史 / 设置"; dailyHistory.Click+=delegate { OpenDailyCheckIns(); };
+            pelvicCheck.Click+=delegate { ToggleCheckIn(DailyHabit.Pelvic); };
+            waterCheck.Click+=delegate { ToggleCheckIn(DailyHabit.Water); };
+            tips.SetToolTip(pelvicCheck,"完成今日个人提肛计划后确认；再次点击可撤销，每天最多记 1 次");
+            tips.SetToolTip(waterCheck,"达到当前全天饮水目标后确认；再次点击可撤销，每天最多记 1 次");
+            tips.SetToolTip(dailyHistory,checkInRecovery.Length>0?checkInRecovery:"查看今日打卡、累计次数，设置每日提醒与饮水目标");
             tips.SetToolTip(options,"设置 Ctrl+, · 精简 Ctrl+M · 暂停 Ctrl+P"); tips.SetToolTip(hide,"收起到托盘，继续提醒（Esc）");
             tips.SetToolTip(clock,"桌前计时估计，不检测坐姿；拖动这里移动浮窗");
-            MouseDown+=DragWindow; Resize+=delegate { UpdateRegion(); };
+            MouseDown+=DragWindow; Resize+=WindowResized;
+            MouseMove+=PointerMoved;
+            MouseUp+=delegate { EndPointerDrag(); };
+            MouseCaptureChanged+=delegate { if (!Capture) EndPointerDrag(); };
+            MouseLeave+=delegate { if (pointerHit==0) Cursor=Cursors.Default; };
             menu.Opening+=delegate(object sender,System.ComponentModel.CancelEventArgs e) { BuildMenu(); e.Cancel=false; };
             tray.Icon=Icon; tray.Text="起身 · 正在计时"; tray.ContextMenuStrip=menu; tray.Visible=!rendering;
             tray.DoubleClick+=delegate { ShowFloat(true); }; tray.BalloonTipClicked+=delegate { ShowFloat(true); };
@@ -241,9 +304,11 @@ namespace StandReminder
             SystemEvents.SessionSwitch+=SessionChanged; SystemEvents.PowerModeChanged+=PowerChanged;
             KeyDown+=delegate(object s,KeyEventArgs e)
             {
+                if (pointerHit!=0) EndPointerDrag();
                 if (e.Control && e.KeyCode==Keys.Oemcomma) { OpenSettings(); e.SuppressKeyPress=true; }
                 if (e.Control && e.KeyCode==Keys.M) { ToggleCompact(); e.SuppressKeyPress=true; }
                 if (e.Control && e.KeyCode==Keys.P) { TogglePause(); e.SuppressKeyPress=true; }
+                if (e.Control && e.KeyCode==Keys.D0) { ResetWindowSize(); e.SuppressKeyPress=true; }
                 if (e.KeyCode==Keys.Escape) { HideFloat(); e.Handled=true; }
                 if (e.KeyCode==Keys.Space && !(ActiveControl is Button)) { SecondaryAction(); e.Handled=true; }
             };
@@ -256,46 +321,57 @@ namespace StandReminder
 
         private Preferences LoadPreferences()
         {
-            try
-            {
-                if (!File.Exists(preferencePath) || new FileInfo(preferencePath).Length>32768) return new Preferences();
-                XmlReaderSettings settings=new XmlReaderSettings(); settings.DtdProcessing=DtdProcessing.Prohibit; settings.XmlResolver=null;
-                using (XmlReader reader=XmlReader.Create(preferencePath,settings))
-                {
-                    Preferences p=(Preferences)new XmlSerializer(typeof(Preferences)).Deserialize(reader);
-                    if (p.WorkMinutes<5 || p.WorkMinutes>120 || p.BreakMinutes<1 || p.BreakMinutes>20) return new Preferences();
-                    if (double.IsNaN(p.TodaySeconds) || double.IsInfinity(p.TodaySeconds) || p.TodaySeconds<0 || p.TodaySeconds>86400) p.TodaySeconds=0;
-                    return p;
-                }
-            }
-            catch (Exception e) { if (e is IOException || e is UnauthorizedAccessException || e is InvalidOperationException || e is XmlException) return new Preferences(); throw; }
+            return demo || rendering?new Preferences():preferenceStore.Load();
         }
 
         private void SavePreferences()
         {
             if (demo || rendering) return;
+            if (dataLocation.Error.Length>0) { saveError=dataLocation.Error+" 请修复权限后重启重试。"; tips.SetToolTip(options,saveError); return; }
             prefs.Left=Left; prefs.Top=Top; prefs.StatsDate=engine.LocalDate.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture);
             prefs.TodaySeconds=engine.TodayWorkElapsed.TotalSeconds; prefs.Completed=engine.CompletedBreaksToday;
+            preferenceStore.Save(prefs); saveError=preferenceStore.Error;
+            tips.SetToolTip(options,saveError.Length>0?saveError:startupError.Length>0?startupError:"设置 Ctrl+, · 精简 Ctrl+M · 暂停 Ctrl+P");
+        }
+
+        private string PersistCheckIns()
+        {
+            SavePreferences();
+            if (!demo && !rendering && dataLocation.Error.Length==0 && checkIns.HasChanges && checkInStore.Save(checkIns.Snapshot())) checkIns.AcceptSaved();
+            string problem=checkInStore.LastError;
+            if (saveError.Length>0) problem=saveError+(problem.Length>0?"\n"+problem:"");
+            if (checkInRecovery.Length>0 && problem.IndexOf(checkInRecovery,StringComparison.Ordinal)<0)
+                problem=checkInRecovery+(problem.Length>0?"\n"+problem:"");
+            tips.SetToolTip(dailyHistory,problem.Length>0?problem:"查看今日打卡、累计次数，设置每日提醒与饮水目标");
+            UpdateUi(false); return problem;
+        }
+        private void ToggleCheckIn(DailyHabit habit)
+        {
+            // Do not apply a click made on yesterday's stale display to today's record.
+            if (!checkIns.SetDate(DateTime.Today,prefs.DailyWaterTargetMl))
+                checkIns.SetCompleted(habit,habit==DailyHabit.Pelvic?!checkIns.Today.PelvicDone:!checkIns.Today.WaterDone);
+            PersistCheckIns();
+        }
+        private void OpenDailyCheckIns()
+        {
+            if (dailyOpen) return; dailyOpen=true;
             try
             {
-                string tmp=preferencePath+".tmp";
-                using (FileStream stream=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None)) new XmlSerializer(typeof(Preferences)).Serialize(stream,prefs);
-                if (File.Exists(preferencePath)) File.Replace(tmp,preferencePath,null); else File.Move(tmp,preferencePath);
-                saveError=""; tips.SetToolTip(options,"设置 Ctrl+, · 精简 Ctrl+M · 暂停 Ctrl+P");
+                checkIns.SetDate(DateTime.Today,prefs.DailyWaterTargetMl);
+                using (DailyCheckInWindow window=new DailyCheckInWindow(checkIns,prefs,scale,PersistCheckIns)) window.ShowDialog(this);
+                UpdateUi(false);
             }
-            catch (Exception e)
-            {
-                if (!(e is IOException || e is UnauthorizedAccessException || e is InvalidOperationException)) throw;
-                saveError="当前文件夹不可写，设置仅在本次运行有效。"; tips.SetToolTip(options,saveError);
-            }
+            finally { dailyOpen=false; }
         }
 
         private int S(float value) { return (int)Math.Round(value*scale); }
+        private int X(float value) { return (int)Math.Round(value*layoutX); }
+        private int Y(float value) { return (int)Math.Round(value*layoutY); }
         private void Place(Control c,int x,int y,int w,int h,float font,bool bold)
         {
-            c.SetBounds(S(x),S(y),S(w),S(h));
-            SetOwnedFont(c,Palette.Font(font,bold,scale));
-            SoftButton b=c as SoftButton; if (b!=null) b.DeviceScale=scale;
+            c.SetBounds(X(x),Y(y),X(w),Y(h));
+            SetOwnedFont(c,Palette.Font(font,bold,contentScale));
+            SoftButton b=c as SoftButton; if (b!=null) b.DeviceScale=contentScale;
         }
         private void SetOwnedFont(Control c,Font font)
         {
@@ -307,58 +383,113 @@ namespace StandReminder
         }
         private void LayoutWindow()
         {
+            if (arrangingWindow) return;
+            arrangingWindow=true;
+            try
+            {
+                compact=prefs.Compact && engine.Phase!=TimerPhase.Reminder && !completedNotice;
+                UpdateSizeLimits();
+                Size saved=compact?new Size(prefs.CompactWidth,prefs.CompactHeight):new Size(prefs.FullWidth,prefs.FullHeight);
+                ClientSize=WindowSizing.Restore(saved,compact,scale,Screen.FromRectangle(Bounds).WorkingArea.Size);
+                LayoutContents();
+            }
+            finally { arrangingWindow=false; }
+            UpdateRegion(); if (ready && !inSizeMove) ClampToScreen(); Invalidate();
+        }
+        private void UpdateSizeLimits()
+        {
+            Size area=Screen.FromRectangle(Bounds).WorkingArea.Size;
+            // Clear old mode limits before applying the other mode's smaller size.
+            MinimumSize=Size.Empty; MaximumSize=Size.Empty;
+            MaximumSize=WindowSizing.Maximum(compact,scale,area);
+            MinimumSize=WindowSizing.Minimum(compact,scale,area);
+        }
+        private void RememberWindowSize()
+        {
+            Size logical=WindowSizing.ToLogical(ClientSize,scale);
+            if (compact) { prefs.CompactWidth=logical.Width; prefs.CompactHeight=logical.Height; }
+            else { prefs.FullWidth=logical.Width; prefs.FullHeight=logical.Height; }
+        }
+        private void WindowResized(object sender,EventArgs e)
+        {
+            if (!ready || arrangingWindow) return;
+            arrangingWindow=true;
+            try { RememberWindowSize(); LayoutContents(); }
+            finally { arrangingWindow=false; }
+            UpdateRegion(); Invalidate();
+        }
+        private void ResetWindowSize()
+        {
+            Size normal=WindowSizing.DefaultSize(compact);
+            if (compact) { prefs.CompactWidth=normal.Width; prefs.CompactHeight=normal.Height; }
+            else { prefs.FullWidth=normal.Width; prefs.FullHeight=normal.Height; }
+            LayoutWindow(); SavePreferences();
+        }
+        private void LayoutContents()
+        {
             SuspendLayout();
-            compact=prefs.Compact && engine.Phase!=TimerPhase.Reminder && !completedNotice;
-            ClientSize=new Size(S(compact ? 280 : 344),S(compact ? 88 : 320));
+            Size design=WindowSizing.DefaultSize(compact);
+            layoutX=ClientSize.Width/(float)design.Width; layoutY=ClientSize.Height/(float)design.Height;
+            contentScale=Math.Min(layoutX,layoutY);
             title.Visible=tagline.Visible=detail.Visible=stats.Visible=tracked.Visible=statsTitle.Visible=trackedTitle.Visible=hide.Visible=!compact;
+            dailyTitle.Visible=dailyHistory.Visible=pelvicCheck.Visible=waterCheck.Visible=!compact;
             if (!compact)
             {
                 Place(title,47,18,48,25,16,true); Place(tagline,96,22,80,18,9,true);
-                Place(options,266,16,28,28,19,true); Place(hide,302,16,26,28,17,false);
+                Place(compactToggle,230,16,28,28,13,false); Place(options,266,16,28,28,19,true); Place(hide,302,16,26,28,17,false);
                 Place(status,23,65,296,23,12,false); Place(clock,18,88,306,66,54,true);
-                SetOwnedFont(clock,new Font("Segoe UI",S(54),FontStyle.Bold,GraphicsUnit.Pixel));
+                SetOwnedFont(clock,new Font("Segoe UI",54*contentScale,FontStyle.Bold,GraphicsUnit.Pixel));
                 Place(detail,24,160,296,22,11,false);
                 Place(statsTitle,35,211,128,18,10,false); Place(stats,35,231,128,23,15,true);
                 Place(trackedTitle,190,211,128,18,10,false); Place(tracked,190,231,128,23,15,true);
                 Place(secondary,22,272,98,34,12,false); Place(primary,130,272,192,34,12,true);
+                Place(dailyTitle,24,320,160,20,11,false); Place(dailyHistory,236,316,86,24,10,false);
+                Place(pelvicCheck,22,348,145,29,11,false); Place(waterCheck,177,348,145,29,11,false);
             }
             else
             {
                 Place(clock,49,11,118,35,27,true);
-                SetOwnedFont(clock,new Font("Segoe UI",S(27),FontStyle.Bold,GraphicsUnit.Pixel));
+                SetOwnedFont(clock,new Font("Segoe UI",27*contentScale,FontStyle.Bold,GraphicsUnit.Pixel));
                 Place(status,51,52,118,19,10,false); Place(options,244,9,24,24,16,true);
+                Place(compactToggle,210,9,24,24,12,false);
                 Place(secondary,174,45,41,30,12,true); Place(primary,223,45,45,30,11,true);
             }
-            ResumeLayout(); UpdateRegion(); if (ready) ClampToScreen(); Invalidate();
+            ResumeLayout(false);
         }
         private void UpdateRegion()
         {
             if (Width<1 || Height<1 || regionSize==Size) return;
             // SetWindowRgn can send another resize message even when the size is unchanged.
             regionSize=Size;
-            using (GraphicsPath path=Palette.Round(new RectangleF(0,0,Width,Height),S(compact ? 15 : 18)))
+            using (GraphicsPath path=Palette.Round(new RectangleF(0,0,Width,Height),(compact ? 15 : 18)*contentScale))
             { Region old=Region; Region=new Region(path); if (old!=null) old.Dispose(); }
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e); Graphics g=e.Graphics; g.SmoothingMode=SmoothingMode.AntiAlias;
-            using (Pen p=new Pen(Palette.Line,scale)) using (GraphicsPath path=Palette.Round(new RectangleF(.5f,.5f,Width-1,Height-1),S(compact?15:18))) g.DrawPath(p,path);
-            g.ScaleTransform(scale,scale);
+            using (Pen p=new Pen(Palette.Line,scale)) using (GraphicsPath path=Palette.Round(new RectangleF(.5f,.5f,Width-1,Height-1),(compact?15:18)*contentScale)) g.DrawPath(p,path);
             Color accent=engine.Phase==TimerPhase.Reminder ? Palette.Amber : Palette.Green;
             if (!compact)
             {
-                using (Brush b=new SolidBrush(Palette.Green)) g.FillEllipse(b,23,24,15,15);
-                using (Pen p=new Pen(Color.White,1.5f)) { g.DrawLine(p,27,31,30,34); g.DrawLine(p,30,34,34,28); }
-                using (Brush b=new SolidBrush(Palette.Line)) Palette.FillRound(g,b,new RectangleF(23,190,298,4),2);
-                if (progress>0) using (Brush b=new SolidBrush(accent)) Palette.FillRound(g,b,new RectangleF(23,190,(float)Math.Max(4,298*progress),4),2);
-                using (Brush b=new SolidBrush(Palette.LightGreen)) Palette.FillRound(g,b,new RectangleF(22,204,300,57),10);
-                using (Pen p=new Pen(Color.FromArgb(208,223,208))) g.DrawLine(p,172,216,172,249);
+                GraphicsState state=g.Save();
+                // The layout may stretch, but keep the brand mark circular.
+                g.TranslateTransform(30.5f*layoutX,31.5f*layoutY); g.ScaleTransform(contentScale,contentScale);
+                using (Brush b=new SolidBrush(Palette.Green)) g.FillEllipse(b,-7.5f,-7.5f,15,15);
+                using (Pen p=new Pen(Color.White,1.5f)) { g.DrawLine(p,-3.5f,-.5f,-.5f,2.5f); g.DrawLine(p,-.5f,2.5f,3.5f,-3.5f); }
+                g.Restore(state);
+                using (Brush b=new SolidBrush(Palette.Line)) Palette.FillRound(g,b,new RectangleF(X(23),Y(190),X(298),Y(4)),2*contentScale);
+                if (progress>0) using (Brush b=new SolidBrush(accent)) Palette.FillRound(g,b,new RectangleF(X(23),Y(190),(float)Math.Max(4*layoutX,298*layoutX*progress),Y(4)),2*contentScale);
+                using (Brush b=new SolidBrush(Palette.LightGreen)) Palette.FillRound(g,b,new RectangleF(X(22),Y(204),X(300),Y(57)),10*contentScale);
+                using (Pen p=new Pen(Color.FromArgb(208,223,208),contentScale)) g.DrawLine(p,X(172),Y(216),X(172),Y(249));
             }
             else
             {
-                using (Pen p=new Pen(Palette.Line,3)) g.DrawEllipse(p,17,27,20,20);
-                using (Pen p=new Pen(accent,3)) { p.StartCap=p.EndCap=LineCap.Round; g.DrawArc(p,17,27,20,20,-90,(float)Math.Max(6,360*progress)); }
+                RectangleF ring=new RectangleF(27*layoutX-10*contentScale,37*layoutY-10*contentScale,20*contentScale,20*contentScale);
+                using (Pen p=new Pen(Palette.Line,3*contentScale)) g.DrawEllipse(p,ring);
+                using (Pen p=new Pen(accent,3*contentScale)) { p.StartCap=p.EndCap=LineCap.Round; g.DrawArc(p,ring,-90,(float)Math.Max(6,360*progress)); }
             }
+            using (Pen grip=new Pen(Palette.Line,1.2f*scale))
+                for (int i=0;i<2;i++) g.DrawLine(grip,Width-(9+i*4)*contentScale,Height-7*contentScale,Width-7*contentScale,Height-(9+i*4)*contentScale);
         }
 
         private static string FormatTime(TimeSpan time)
@@ -392,15 +523,27 @@ namespace StandReminder
             tips.SetToolTip(primary,rest?"提前结束不计次数，保留已有桌前计时":completedNotice?"开始新一轮桌前计时":"开始活动倒计时，请根据自身能力走动或舒展");
             tips.SetToolTip(secondary,completedNotice?"收起到托盘，回来后可继续":due?"五分钟后再次提醒，不清空已有计时":paused?"继续计时":"暂停，暂时离开时可使用");
             primary.Enabled=secondary.Enabled=!Blocked;
+            compactToggle.Glyph=compact?UiGlyph.Expand:UiGlyph.Compact;
+            compactToggle.Enabled=!due && !completedNotice;
+            compactToggle.AccessibleName=compact?"展开完整浮窗":"切换精简浮窗";
+            tips.SetToolTip(compactToggle,!compactToggle.Enabled?"处理当前活动提醒后可切换浮窗大小":compact?"展开完整浮窗（Ctrl+M）":"切换精简浮窗（Ctrl+M）");
+            compactToggle.Invalidate();
+            pelvicCheck.Text=checkIns.Today.PelvicDone?"✓ 提肛已完成":"○ 提肛打卡";
+            waterCheck.Text=(checkIns.Today.WaterDone?"✓":"○")+" 喝水 "+DailyCheckInWindow.Litres(checkIns.Today.WaterTargetMl)+" L";
+            pelvicCheck.Primary=checkIns.Today.PelvicDone; waterCheck.Primary=checkIns.Today.WaterDone;
+            dailyTitle.Text=checkInStore.LastError.Length>0?"每日打卡 · 记录提示":"每日打卡";
+            pelvicCheck.AccessibleName=checkIns.Today.PelvicDone?"提肛已完成，点击撤销":"确认今日提肛已完成";
+            waterCheck.AccessibleName=checkIns.Today.WaterDone?"喝水已完成，点击撤销":"确认已达到今日饮水目标";
             progress=rest?engine.BreakElapsed.TotalSeconds/engine.ActiveBreakDuration.TotalSeconds:Math.Min(1,engine.WorkElapsed.TotalSeconds/engine.WorkDuration.TotalSeconds);
             string trayText="起身 · "+(quiet.IsActive?"全屏免打扰（仍计时 / 保留暂停）":paused?"已暂停":due?"该活动了":rest?"活动 "+clock.Text:clock.Text+" 后活动");
             if (tray.Text!=trayText) tray.Text=trayText;
-            Invalidate(new Rectangle(0,S(compact?24:188),Width,S(compact?28:8)));
+            Invalidate(new Rectangle(0,Y(compact?24:188),Width,Y(compact?28:8)));
         }
         private void OnTick(object sender,EventArgs e)
         {
             TimeSpan elapsed=monotonic.Elapsed; monotonic.Restart();
             engine.SetLocalDate(DateTime.Today);
+            bool checkInDateChanged=checkIns.SetDate(DateTime.Today,prefs.DailyWaterTargetMl);
             RefreshQuietMode(elapsed);
             TimerSignal signal=Blocked?TimerSignal.None:engine.Tick(elapsed);
             if (signal==TimerSignal.ReminderDue) NotifyDue();
@@ -410,7 +553,25 @@ namespace StandReminder
                 NotifyCompleted(); SavePreferences();
             }
             FlushQuietRequests();
-            UpdateUi(false); if (++ticks%60==0) SavePreferences();
+            NotifyDailyCheckIns();
+            ticks++;
+            if (checkInDateChanged || (ticks%60==0 && checkIns.HasChanges)) PersistCheckIns();
+            UpdateUi(false); if (ticks%60==0) SavePreferences();
+        }
+        private void NotifyDailyCheckIns()
+        {
+            if (rendering || demo) return;
+            DailyHabit pending=PendingDailyCheckIns(DateTime.Now);
+            if (pending==DailyHabit.None) return;
+            checkIns.MarkReminded(); PersistCheckIns();
+            if (prefs.Sound) SystemSounds.Asterisk.Play();
+            // Keep the balloon generic: personal health details remain inside the app.
+            tray.ShowBalloonTip(5000,"每日打卡提醒","今日还有 "+(pending==(DailyHabit.Pelvic|DailyHabit.Water)?"2":"1")+" 项打卡待确认。按实际情况记录，无需补量。",ToolTipIcon.Info);
+        }
+        internal DailyHabit PendingDailyCheckIns(DateTime now)
+        {
+            if (quiet.IsActive || Blocked || settingsOpen || dailyOpen || completedNotice || engine.Phase==TimerPhase.Reminder || engine.Phase==TimerPhase.Break) return DailyHabit.None;
+            return checkIns.GetReminder(now,prefs.CheckInReminderMinute,prefs.PelvicCheckReminder,prefs.WaterCheckReminder);
         }
         private void RefreshQuietMode(TimeSpan elapsed)
         {
@@ -429,7 +590,7 @@ namespace StandReminder
             }
             else if (change==QuietTransition.Exited) TopMost=prefs.AlwaysOnTop;
             // A user can open settings from the tray; hide again when the game is foreground.
-            else if (quiet.IsActive && Visible && !ContainsFocus && !settingsOpen) Hide();
+            else if (quiet.IsActive && Visible && !ContainsFocus && !settingsOpen && !dailyOpen) Hide();
         }
         private void FlushQuietRequests()
         {
@@ -481,20 +642,21 @@ namespace StandReminder
         {
             // Clear alone detaches items without releasing their event handlers and images.
             while (menu.Items.Count>0) { ToolStripItem item=menu.Items[0]; menu.Items.RemoveAt(0); item.Dispose(); }
-            menu.Items.Add("显示浮窗",null,delegate { ShowFloat(true); });
-            ToolStripMenuItem settings=new ToolStripMenuItem("设置与说明…",null,delegate { OpenSettings(); }); settings.ShortcutKeyDisplayString="Ctrl+,"; menu.Items.Add(settings);
-            ToolStripMenuItem small=new ToolStripMenuItem("精简浮窗"); small.Checked=prefs.Compact;
-            small.ShortcutKeyDisplayString="Ctrl+M"; small.Click+=delegate { ToggleCompact(); }; menu.Items.Add(small);
-            ToolStripMenuItem pin=new ToolStripMenuItem("浮窗置顶"); pin.Checked=prefs.AlwaysOnTop;
-            pin.Click+=delegate { prefs.AlwaysOnTop=!prefs.AlwaysOnTop; TopMost=prefs.AlwaysOnTop && !quiet.IsActive; SavePreferences(); }; menu.Items.Add(pin);
-            ToolStripMenuItem autoQuiet=new ToolStripMenuItem("全屏自动免打扰"); autoQuiet.Checked=prefs.AutoQuietFullscreen;
-            autoQuiet.Click+=delegate { prefs.AutoQuietFullscreen=!prefs.AutoQuietFullscreen; RefreshQuietMode(TimeSpan.Zero); FlushQuietRequests(); UpdateUi(false); SavePreferences(); }; menu.Items.Add(autoQuiet);
-            if (quiet.IsActive) { ToolStripMenuItem info=new ToolStripMenuItem("正在免打扰 · 提醒已静音"); info.Enabled=false; menu.Items.Add(info); }
-            menu.Items.Add(new ToolStripSeparator());
-            ToolStripMenuItem pause=new ToolStripMenuItem(engine.IsPaused?"继续计时":"暂停计时",null,delegate { TogglePause(); }); pause.Enabled=!Blocked; pause.ShortcutKeyDisplayString="Ctrl+P"; menu.Items.Add(pause);
-            menu.Items.Add("重新开始本轮",null,delegate { if (!Blocked) { completedNotice=false; engine.ResetSession(); monotonic.Restart(); UpdateUi(true); SavePreferences(); } });
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("退出起身",null,delegate { exiting=true; Close(); });
+            menu.Heading(quiet.IsActive?"起身 · 全屏免打扰中":"起身 · 快捷菜单");
+            menu.Entry("显示浮窗",UiGlyph.Window,delegate { ShowFloat(true); },"",false,false,false);
+            menu.Entry("每日打卡与历史",UiGlyph.Calendar,delegate { OpenDailyCheckIns(); },"",false,false,false);
+            menu.Entry("设置与说明",UiGlyph.Settings,delegate { OpenSettings(); },"Ctrl+,",false,false,false);
+            menu.Divider();
+            ToolStripMenuItem small=menu.Entry("精简浮窗",UiGlyph.Compact,delegate { ToggleCompact(); },"Ctrl+M",true,prefs.Compact,false);
+            small.Enabled=engine.Phase!=TimerPhase.Reminder && !completedNotice;
+            menu.Entry("恢复默认大小",UiGlyph.Window,delegate { ResetWindowSize(); },"Ctrl+0",false,false,false);
+            menu.Entry("浮窗置顶",UiGlyph.None,delegate { prefs.AlwaysOnTop=!prefs.AlwaysOnTop; TopMost=prefs.AlwaysOnTop && !quiet.IsActive; SavePreferences(); },"",true,prefs.AlwaysOnTop,false);
+            menu.Entry("全屏自动免打扰",UiGlyph.None,delegate { prefs.AutoQuietFullscreen=!prefs.AutoQuietFullscreen; RefreshQuietMode(TimeSpan.Zero); FlushQuietRequests(); UpdateUi(false); SavePreferences(); },"",true,prefs.AutoQuietFullscreen,false);
+            menu.Divider();
+            ToolStripMenuItem pause=menu.Entry(engine.IsPaused?"继续计时":"暂停计时",engine.IsPaused?UiGlyph.Play:UiGlyph.Pause,delegate { TogglePause(); },"Ctrl+P",false,false,false); pause.Enabled=!Blocked;
+            ToolStripMenuItem reset=menu.Entry("重新开始本轮",UiGlyph.Reset,delegate { if (!Blocked) { completedNotice=false; engine.ResetSession(); monotonic.Restart(); UpdateUi(true); SavePreferences(); } },"",false,false,false); reset.Enabled=!Blocked;
+            menu.Divider();
+            menu.Entry("退出起身",UiGlyph.Exit,delegate { exiting=true; Close(); },"",false,false,true);
         }
         private void ToggleCompact()
         { prefs.Compact=!prefs.Compact; UpdateUi(true); SavePreferences(); }
@@ -505,7 +667,12 @@ namespace StandReminder
             if (settingsOpen) return; settingsOpen=true;
             try
             {
-                using (SettingsWindow settings=new SettingsWindow(prefs,scale,saveError))
+                using (SettingsWindow settings=new SettingsWindow(prefs,scale,saveError+startupError,delegate(bool enabled)
+                {
+                    startupError=demo || rendering?"":StartupRegistration.Commit(new RegistryStartupEntry(),prefs,enabled,Application.ExecutablePath,delegate
+                    { SavePreferences(); return saveError.Length==0; });
+                    return startupError;
+                }))
                 {
                     if (settings.ShowDialog(this)==DialogResult.OK)
                     {
@@ -513,6 +680,7 @@ namespace StandReminder
                         prefs.WorkMinutes=settings.WorkMinutes; prefs.BreakMinutes=settings.BreakMinutes;
                         prefs.Sound=settings.SoundOn; prefs.AlwaysOnTop=settings.PinOn; prefs.Compact=settings.CompactOn;
                         prefs.AutoQuietFullscreen=settings.AutoQuietOn;
+                        prefs.StartWithWindows=settings.StartOn;
                         engine.Configure(demo?TimeSpan.FromSeconds(10):TimeSpan.FromMinutes(prefs.WorkMinutes),demo?TimeSpan.FromSeconds(5):TimeSpan.FromMinutes(prefs.BreakMinutes));
                         RefreshQuietMode(TimeSpan.Zero); TopMost=prefs.AlwaysOnTop && !quiet.IsActive; UpdateUi(true); SavePreferences();
                         if (previous!=TimerPhase.Reminder && engine.Phase==TimerPhase.Reminder) NotifyDue();
@@ -529,22 +697,60 @@ namespace StandReminder
             finally { manualShow=false; }
         }
         private void HideFloat()
-        { restoreAfterQuiet=false; Hide(); }
+        { EndPointerDrag(); restoreAfterQuiet=false; Hide(); }
         private void ClampToScreen()
         {
             Rectangle area=Screen.FromRectangle(Bounds).WorkingArea;
             Location=new Point(Math.Max(area.Left,Math.Min(Left,area.Right-Width)),Math.Max(area.Top,Math.Min(Top,area.Bottom-Height)));
         }
-        [DllImport("user32.dll")] private static extern bool ReleaseCapture();
         [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd,int msg,IntPtr wp,IntPtr lp);
         private void DragWindow(object sender,MouseEventArgs e)
-        { if (e.Button==MouseButtons.Left) { ReleaseCapture(); SendMessage(Handle,0xA1,new IntPtr(2),IntPtr.Zero); } }
+        {
+            if (e.Button!=MouseButtons.Left) return;
+            Point point=PointToClient(((Control)sender).PointToScreen(e.Location));
+            int hit=WindowSizing.HitTest(point,ClientSize,ResizeEdge,ResizeCorner);
+            BeginPointerDrag(hit==1?2:hit,((Control)sender).PointToScreen(e.Location));
+        }
+        private void PointerMoved(object sender,MouseEventArgs e)
+        {
+            Point screen=((Control)sender).PointToScreen(e.Location);
+            if (pointerHit!=0) { ContinuePointerDrag(screen); return; }
+            int hit=WindowSizing.HitTest(PointToClient(screen),ClientSize,ResizeEdge,ResizeCorner);
+            Cursor=hit==10 || hit==11?Cursors.SizeWE:hit==12 || hit==15?Cursors.SizeNS:hit==13 || hit==17?Cursors.SizeNWSE:hit==14 || hit==16?Cursors.SizeNESW:Cursors.Default;
+        }
+        internal void BeginPointerDrag(int hit,Point screen)
+        {
+            if (pointerHit!=0 || (hit!=2 && (hit<10 || hit>17))) return;
+            menu.Close(); inSizeMove=true;
+            pointerHit=hit; pointerOrigin=screen; pointerBounds=Bounds; Capture=true;
+        }
+        internal void ContinuePointerDrag(Point screen)
+        {
+            if (pointerHit==0) return;
+            Bounds=WindowSizing.DragBounds(pointerBounds,pointerOrigin,screen,pointerHit,MinimumSize,MaximumSize);
+        }
+        internal void EndPointerDrag()
+        {
+            if (pointerHit==0) return;
+            pointerHit=0; inSizeMove=false; Capture=false; Cursor=Cursors.Default;
+            RememberWindowSize(); LayoutWindow(); SavePreferences();
+        }
+        protected override void OnShown(EventArgs e)
+        { base.OnShown(e); if (StartInTray) { StartInTray=false; HideFloat(); } }
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg==0x83) { m.Result=IntPtr.Zero; return; }
+            if (m.Msg==0x85) { m.Result=IntPtr.Zero; return; }
+            if (m.Msg==0x86) { m.Result=new IntPtr(1); return; }
+            if (m.Msg==0x84 && ready)
+            {
+                m.Result=new IntPtr(1); return;
+            }
             if (m.Msg==Program.ShowMessage) { ShowFloat(true); return; }
+            if (m.Msg==0x231 && ready) { inSizeMove=true; menu.Close(); UpdateSizeLimits(); }
             base.WndProc(ref m);
-            if (m.Msg==0x232 && ready) { ClampToScreen(); SavePreferences(); }
-            if (m.Msg==0x7E && ready) ClampToScreen();
+            if (m.Msg==0x232 && ready) { inSizeMove=false; RememberWindowSize(); LayoutWindow(); SavePreferences(); }
+            if (m.Msg==0x7E && ready) LayoutWindow();
         }
         private void Dispatch(Action action)
         { if (IsDisposed || !IsHandleCreated) return; try { BeginInvoke(action); } catch (InvalidOperationException) { } }
@@ -562,12 +768,13 @@ namespace StandReminder
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!exiting && e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; HideFloat(); return; }
-            SavePreferences(); base.OnFormClosing(e);
+            PersistCheckIns(); base.OnFormClosing(e);
         }
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                pointerHit=0; inSizeMove=false; Capture=false;
                 timer.Stop(); timer.Dispose(); SystemEvents.SessionSwitch-=SessionChanged; SystemEvents.PowerModeChanged-=PowerChanged;
                 tray.Visible=false; tray.Dispose(); tips.Dispose(); menu.Dispose();
                 if (Icon!=null) Icon.Dispose();
@@ -579,6 +786,11 @@ namespace StandReminder
         {
             string folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews"); Directory.CreateDirectory(folder);
             Show(); UpdateUi(true); RenderTo(folder,"floating.png");
+            ClientSize=WindowSizing.ToPixels(new Size(440,500),scale); RenderTo(folder,"resized.png");
+            ResetWindowSize();
+            menu.Show(this,new Point(S(24),S(56))); menu.Items[2].Select(); menu.Refresh();
+            using (Bitmap bitmap=new Bitmap(menu.Width,menu.Height)) { menu.DrawToBitmap(bitmap,new Rectangle(Point.Empty,menu.Size)); bitmap.Save(Path.Combine(folder,"menu.png"),System.Drawing.Imaging.ImageFormat.Png); }
+            menu.Close();
             // Reveal keyboard focus cues in this preview window only.
             primary.Focus(); SendMessage(Handle,0x127,new IntPtr(0x10002),IntPtr.Zero);
             RenderTo(folder,"focused.png");
@@ -592,6 +804,14 @@ namespace StandReminder
             completedNotice=true; engine.Pause(); UpdateUi(true); RenderTo(folder,"completed.png");
             using (SettingsWindow settings=new SettingsWindow(prefs,scale,""))
             { settings.Show(this); settings.DrawPreview(Path.Combine(folder,"settings.png")); settings.DrawPreview(Path.Combine(folder,"guide.png"),true); settings.Hide(); }
+            DailyCheckInData sample=new DailyCheckInData();
+            for (int i=1;i<=6;i++) sample.Days.Add(new DailyCheckInRecord { Date=DateTime.Today.AddDays(-i).ToString("yyyy-MM-dd",CultureInfo.InvariantCulture),PelvicDone=i!=3,WaterDone=i%3!=0,WaterTargetMl=i>3?1700:1500 });
+            DailyCheckInEngine previewEngine=new DailyCheckInEngine(sample,DateTime.Today,1500); previewEngine.SetCompleted(DailyHabit.Pelvic,true);
+            using (DailyCheckInWindow daily=new DailyCheckInWindow(previewEngine,prefs,scale,delegate { return ""; }))
+            {
+                daily.Show(this); daily.DrawPreview(Path.Combine(folder,"checkins.png"),0);
+                daily.DrawPreview(Path.Combine(folder,"checkin-history.png"),1); daily.DrawPreview(Path.Combine(folder,"checkin-settings.png"),2); daily.Hide();
+            }
             Hide();
         }
         private void RenderTo(string folder,string name)
@@ -616,7 +836,7 @@ namespace StandReminder
     internal sealed class SettingsWindow : Form
     {
         private readonly NumericUpDown work=new NumericUpDown(), rest=new NumericUpDown();
-        private readonly CheckBox pin=new CheckBox(), sound=new CheckBox(), small=new CheckBox(), autoQuiet=new CheckBox();
+        private readonly CheckBox pin=new CheckBox(), sound=new CheckBox(), small=new CheckBox(), autoQuiet=new CheckBox(), startup=new CheckBox();
         private readonly float scale;
         private readonly List<Font> ownedFonts=new List<Font>();
         private readonly SoftButton guideTab=new SoftButton();
@@ -627,12 +847,13 @@ namespace StandReminder
         internal bool SoundOn { get { return sound.Checked; } }
         internal bool CompactOn { get { return small.Checked; } }
         internal bool AutoQuietOn { get { return autoQuiet.Checked; } }
+        internal bool StartOn { get { return startup.Checked; } }
         private int S(float v) { return (int)Math.Round(v*scale); }
         private void Place(Control c,int x,int y,int w,int h,float size,bool bold)
         { c.SetBounds(S(x),S(y),S(w),S(h)); Font font=Palette.Font(size,bold,scale); c.Font=font; ownedFonts.Add(font); placement.Controls.Add(c); }
         private void TextAt(string text,int x,int y,int w,int h,float size,bool bold,Color color)
         { Label label=new Label(); label.Text=text; label.ForeColor=color; Place(label,x,y,w,h,size,bold); }
-        internal SettingsWindow(Preferences p,float uiScale,string error)
+        internal SettingsWindow(Preferences p,float uiScale,string error,Func<bool,string> applyStartup=null)
         {
             scale=uiScale; placement=this; Text="起身 · 设置与说明 · v"+typeof(Program).Assembly.GetName().Version.ToString(3); BackColor=Palette.Paper; ForeColor=Palette.Ink;
             AutoScaleMode=AutoScaleMode.None; FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=MinimizeBox=false;
@@ -651,7 +872,7 @@ namespace StandReminder
             body.SetBounds(S(12),S(12),card.Width-S(24),card.Height-S(24)); card.Controls.Add(body);
             Panel preferences=new Panel(), guide=new Panel();
             preferences.BackColor=guide.BackColor=Palette.Card;
-            preferences.Size=new Size(S(384),S(344)); guide.Size=new Size(S(384),S(420));
+            preferences.Size=new Size(S(380),S(384)); guide.Size=new Size(S(380),S(420));
             body.Controls.Add(preferences); body.Controls.Add(guide); guide.Visible=false;
             preferencesTab.Click+=delegate { guide.Visible=false; preferences.Visible=true; preferencesTab.Primary=true; guideTab.Primary=false; body.AutoScrollPosition=Point.Empty; preferencesTab.Invalidate(); guideTab.Invalidate(); };
             guideTab.Click+=delegate { preferences.Visible=false; guide.Visible=true; preferencesTab.Primary=false; guideTab.Primary=true; body.AutoScrollPosition=Point.Empty; preferencesTab.Invalidate(); guideTab.Invalidate(); };
@@ -676,10 +897,11 @@ namespace StandReminder
             work.AccessibleName="提醒间隔，分钟"; rest.AccessibleName="活动时长，分钟";
             TextAt("间隔 5–120 分钟 · 活动 1–20 分钟\n保留已累计计时；活动时长从下一次生效。",6,169,372,39,10,false,Palette.Muted);
             TextAt("使用偏好",6,217,370,24,13,true,Palette.Ink);
-            pin.Text="浮窗始终置顶"; pin.Checked=p.AlwaysOnTop; Place(pin,6,253,187,25,12,false);
-            sound.Text="播放提示音"; sound.Checked=p.Sound; Place(sound,198,253,180,25,12,false);
-            small.Text="精简浮窗（到时自动展开）"; small.Checked=p.Compact; Place(small,6,286,372,25,12,false);
-            autoQuiet.Text="全屏自动免打扰（游戏 / 视频 / 演示）"; autoQuiet.Checked=p.AutoQuietFullscreen; Place(autoQuiet,6,319,372,25,12,false);
+            startup.Text="随 Windows 登录启动（默认开启）"; startup.Checked=p.StartWithWindows; Place(startup,6,253,372,25,12,false);
+            pin.Text="浮窗始终置顶"; pin.Checked=p.AlwaysOnTop; Place(pin,6,286,187,25,12,false);
+            sound.Text="播放提示音"; sound.Checked=p.Sound; Place(sound,198,286,180,25,12,false);
+            small.Text="精简浮窗（到时自动展开）"; small.Checked=p.Compact; Place(small,6,319,372,25,12,false);
+            autoQuiet.Text="全屏自动免打扰（游戏 / 视频 / 演示）"; autoQuiet.Checked=p.AutoQuietFullscreen; Place(autoQuiet,6,352,372,25,12,false);
             placement=guide;
             TextAt("怎样算完成一次活动？",6,2,372,24,13,true,Palette.Ink);
             TextAt("提醒后，手动开始活动倒计时；完整结束才计入次数。\n提前结束保留桌前计时。完成后，点「继续计时」开始下一轮。",6,35,372,55,11,false,Palette.Muted);
@@ -695,9 +917,16 @@ namespace StandReminder
             TextAt("计时不变，浮窗 / 声音 / 通知静默。\n退出全屏稳定 3 秒后恢复，未处理的提醒只补发一次。",6,384,372,31,10,false,Palette.Muted);
             placement=this;
             int footer=(int)Math.Round(ClientSize.Height/scale)-84;
-            TextAt(error.Length>0?error:"仅本机保存 · 不检测坐姿 · 按自身能力活动",25,footer,430,29,10,false,error.Length>0?Palette.Amber:Palette.Muted);
+            Label feedback=new Label(); feedback.Text=error.Length>0?error:"本机数据：%LOCALAPPDATA%\\SitLess · 不检测坐姿";
+            feedback.ForeColor=error.Length>0?Palette.Amber:Palette.Muted; Place(feedback,25,footer,430,29,10,false);
             SoftButton cancel=new SoftButton(); cancel.Text="取消"; cancel.DeviceScale=scale; cancel.DialogResult=DialogResult.Cancel; Place(cancel,224,footer+35,92,34,12,false);
-            SoftButton save=new SoftButton(); save.Text="保存设置"; save.DeviceScale=scale; save.Primary=true; save.DialogResult=DialogResult.OK; Place(save,326,footer+35,130,34,12,true);
+            SoftButton save=new SoftButton(); save.Text="保存设置"; save.DeviceScale=scale; save.Primary=true; Place(save,326,footer+35,130,34,12,true);
+            save.Click+=delegate
+            {
+                string problem=applyStartup==null?"":applyStartup(startup.Checked);
+                if (problem.Length>0) { feedback.Text=problem; feedback.ForeColor=Palette.Amber; return; }
+                DialogResult=DialogResult.OK;
+            };
             AcceptButton=save; CancelButton=cancel;
         }
         internal void DrawPreview(string path,bool showGuide=false)
